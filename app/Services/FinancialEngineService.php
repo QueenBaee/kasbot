@@ -288,10 +288,11 @@ final class FinancialEngineService
         }, 5);
     }
 
-    public function upsertRevolvingInstallment(
+    public function upsertFixedInstallment(
         int $userId,
         string $name,
-        int $amount
+        int $amount,
+        int $remainingTenor
     ): Installment {
         $normalizedName = Str::of($name)->trim()->squish()->value();
 
@@ -299,25 +300,12 @@ final class FinancialEngineService
             throw new InvalidArgumentException('Installment name must not be empty.');
         }
 
-        if ($amount <= 0) {
-            throw new InvalidArgumentException('Installment amount must be greater than zero.');
+        if ($amount <= 0 || $remainingTenor <= 0) {
+            throw new InvalidArgumentException('Installment amount and tenor must be greater than zero.');
         }
 
-        return DB::transaction(function () use ($userId, $normalizedName, $amount): Installment {
+        return DB::transaction(function () use ($userId, $normalizedName, $amount, $remainingTenor): Installment {
             $user = $this->lockUser($userId);
-            $today = $this->localTodayFor($user);
-            $currentPayDate = $today->day(25);
-
-            $currentSalaryCycleExists = BudgetCycle::query()
-                ->where('user_id', $user->getKey())
-                ->whereDate('start_date', $currentPayDate->toDateString())
-                ->where('status', '!=', 'cancelled')
-                ->lockForUpdate()
-                ->exists();
-
-            $targetMonth = ($today->day > 25 || $currentSalaryCycleExists)
-                ? $today->addMonth()->format('Y-m')
-                : $today->format('Y-m');
 
             $installment = Installment::query()
                 ->where('user_id', $user->getKey())
@@ -329,31 +317,49 @@ final class FinancialEngineService
                 return Installment::query()->create([
                     'user_id' => $user->getKey(),
                     'name' => $normalizedName,
-                    'jenis' => 'revolving',
-                    'nominal_default' => 0,
-                    'jadwal_khusus' => [$targetMonth => $amount],
-                    'sisa_tenor_bulan' => null,
+                    'jenis' => 'tetap',
+                    'nominal_default' => $amount,
+                    'sisa_tenor_bulan' => $remainingTenor,
                     'active' => true,
                 ]);
             }
 
-            if ($installment->jenis !== 'revolving') {
-                throw new UserFinancialException('An installment with this name is not revolving.');
+            if ($installment->jenis !== 'tetap') {
+                throw new UserFinancialException('An installment with this name is not fixed.');
             }
-
-            $schedule = $installment->jadwal_khusus;
-
-            if ($schedule !== null && ! is_array($schedule)) {
-                throw new FinancialIntegrityException('The revolving installment schedule is corrupt.');
-            }
-
-            $schedule ??= [];
-            $schedule[$targetMonth] = $amount;
 
             $installment->forceFill([
-                'jadwal_khusus' => $schedule,
+                'nominal_default' => $amount,
+                'sisa_tenor_bulan' => $remainingTenor,
                 'active' => true,
             ])->save();
+
+            return $installment->refresh();
+        }, 5);
+    }
+
+    public function deactivateInstallment(int $userId, string $name): ?Installment
+    {
+        $normalizedName = Str::of($name)->trim()->squish()->value();
+
+        if ($normalizedName === '') {
+            throw new InvalidArgumentException('Installment name must not be empty.');
+        }
+
+        return DB::transaction(function () use ($userId, $normalizedName): ?Installment {
+            $user = $this->lockUser($userId);
+            $installment = Installment::query()
+                ->where('user_id', $user->getKey())
+                ->where('active', true)
+                ->whereRaw('LOWER(name) = ?', [Str::lower($normalizedName)])
+                ->lockForUpdate()
+                ->first();
+
+            if (! $installment instanceof Installment) {
+                return null;
+            }
+
+            $installment->forceFill(['active' => false])->save();
 
             return $installment->refresh();
         }, 5);

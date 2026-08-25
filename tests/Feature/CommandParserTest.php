@@ -8,6 +8,7 @@ use App\Models\BudgetCycle;
 use App\Models\BudgetPeriod;
 use App\Models\Category;
 use App\Models\CategoryKeyword;
+use App\Models\Installment;
 use App\Models\Transaction;
 use App\Models\User;
 use App\Services\CommandParserService;
@@ -84,6 +85,56 @@ test('money formats and bot usernames are parsed as integer rupiah', function (s
     'multiple dots' => ['1.500.000 laptop sleeve', 1_500_000],
     'comma grouping' => ['1,500,000 laptop sleeve', 1_500_000],
 ]);
+
+test('tagihan parses names amounts and tenors without absorbing numeric fields', function (string $command, string $name, int $amount, int $tenor): void {
+    $result = $this->parser->handleIncomingMessage($this->user->id, $command);
+    $installment = Installment::query()->where('user_id', $this->user->id)->sole();
+
+    expect($result->text)->toContain("Tagihan {$name} berhasil disimpan")
+        ->and($installment->name)->toBe($name)
+        ->and($installment->nominal_default)->toBe($amount)
+        ->and($installment->sisa_tenor_bulan)->toBe($tenor)
+        ->and($installment->active)->toBeTrue();
+})->with([
+    'single-word name' => ['/tagihan laptop 810234 4', 'laptop', 810_234, 4],
+    'multi-word name' => ['/tagihan cicilan laptop gaming 1500000 12', 'cicilan laptop gaming', 1_500_000, 12],
+]);
+
+test('tagihan hapus deactivates only the current users active case-insensitive match', function (): void {
+    $otherUser = User::query()->create([
+        'telegram_user_id' => random_int(1, PHP_INT_MAX),
+        'name' => 'Other User',
+        'timezone' => 'Asia/Jakarta',
+    ]);
+    $owned = Installment::query()->create([
+        'user_id' => $this->user->id,
+        'name' => 'cicilan laptop gaming',
+        'jenis' => 'tetap',
+        'nominal_default' => 1_500_000,
+        'sisa_tenor_bulan' => 12,
+        'active' => true,
+    ]);
+    $other = Installment::query()->create([
+        'user_id' => $otherUser->id,
+        'name' => 'cicilan laptop gaming',
+        'jenis' => 'tetap',
+        'nominal_default' => 1_500_000,
+        'sisa_tenor_bulan' => 12,
+        'active' => true,
+    ]);
+
+    $result = $this->parser->handleIncomingMessage($this->user->id, '/tagihan_hapus CICILAN LAPTOP GAMING');
+
+    expect($result->text)->toBe('✅ Tagihan cicilan laptop gaming berhasil dihapus.')
+        ->and($owned->refresh()->active)->toBeFalse()
+        ->and($other->refresh()->active)->toBeTrue();
+});
+
+test('tagihan hapus reports when no active matching record exists', function (): void {
+    $result = $this->parser->handleIncomingMessage($this->user->id, '/tagihan_hapus laptop');
+
+    expect($result->text)->toBe('❌ Tagihan laptop tidak ditemukan.');
+});
 
 test('longest normalized keyword wins and normalized keyword is globally unique', function (): void {
     app(FinancialEngineService::class)->processGajian($this->user->id, 400_000, '2026-08-25');

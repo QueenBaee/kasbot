@@ -63,7 +63,8 @@ final class CommandParserService
         return match ($command) {
             'gajian' => $this->handleGajian($userId, $arguments),
             'masuk' => $this->handleIncome($userId, $arguments),
-            'tagihan' => $this->handleRevolvingInstallment($userId, $arguments),
+            'tagihan' => $this->handleInstallment($userId, '/tagihan '.$arguments),
+            'tagihan_hapus' => $this->handleDeleteInstallment($userId, '/tagihan_hapus '.$arguments),
             'ambil_dingin' => $this->handleColdMoneyTransfer($userId, $arguments),
             'undo' => $this->handleUndo($userId, $arguments),
             'undo_gajian' => $this->handleUndoGajian($userId, $arguments),
@@ -128,31 +129,56 @@ final class CommandParserService
         );
     }
 
-    private function handleRevolvingInstallment(int $userId, string $arguments): CommandResult
+    private function handleInstallment(int $userId, string $text): CommandResult
     {
-        $matched = preg_match('/^(.+?)\s+(\S+)$/us', $arguments, $matches);
+        $matched = preg_match('/^\/tagihan\s+(.+?)\s+(\d+)\s+(\d+)$/i', $text, $matches);
 
         if ($matched !== 1) {
-            throw new InvalidArgumentException('Invalid revolving installment syntax.');
+            throw new InvalidArgumentException('Invalid installment syntax.');
         }
 
-        $name = Str::of($matches[1])->trim()->squish()->value();
+        $name = trim($matches[1]);
         $amount = $this->parseMoney($matches[2]);
+        $remainingTenor = (int) $matches[3];
 
-        if ($name === '') {
+        if ($name === '' || $remainingTenor <= 0) {
             throw new InvalidArgumentException('Installment name is required.');
         }
 
-        $installment = $this->financialEngine->upsertRevolvingInstallment(
+        $installment = $this->financialEngine->upsertFixedInstallment(
             $userId,
             $name,
             $amount,
+            $remainingTenor,
         );
 
         return new CommandResult(
             "✅ Tagihan {$installment->name} berhasil disimpan.\n\n".
             "Nominal: {$this->rupiah->format($amount)}"
         );
+    }
+
+    private function handleDeleteInstallment(int $userId, string $text): CommandResult
+    {
+        $matched = preg_match('/^\/tagihan_hapus\s+(.+)$/i', $text, $matches);
+
+        if ($matched !== 1) {
+            throw new InvalidArgumentException('Invalid installment deletion syntax.');
+        }
+
+        $name = trim($matches[1]);
+
+        if ($name === '') {
+            throw new InvalidArgumentException('Installment name is required.');
+        }
+
+        $installment = $this->financialEngine->deactivateInstallment($userId, $name);
+
+        if ($installment === null) {
+            return new CommandResult("❌ Tagihan {$name} tidak ditemukan.");
+        }
+
+        return new CommandResult("✅ Tagihan {$installment->name} berhasil dihapus.");
     }
 
     private function handleColdMoneyTransfer(int $userId, string $arguments): CommandResult
@@ -421,8 +447,8 @@ final class CommandParserService
             return new CommandResult('❌ Gajian tidak bisa dibatalkan karena sudah ada transaksi setelahnya.');
         }
 
-        if (Str::contains($message, 'not revolving')) {
-            return new CommandResult('❌ Nama tagihan tersebut sudah digunakan untuk cicilan tetap.');
+        if (Str::contains($message, 'not fixed')) {
+            return new CommandResult('❌ Nama tagihan tersebut sudah digunakan untuk cicilan revolving.');
         }
 
         if ($exception instanceof InvalidArgumentException) {
@@ -440,6 +466,7 @@ final class CommandParserService
             "/gajian\n".
             "/masuk\n".
             "/tagihan\n".
+            "/tagihan_hapus\n".
             "/ambil_dingin\n".
             "/undo\n".
             "/undo_gajian\n".
