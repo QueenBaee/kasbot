@@ -190,19 +190,18 @@ final class ReportingService
 
         foreach ($installments as $installment) {
             $tenor = $installment->sisa_tenor_bulan;
-            $lines[] = "• {$installment->name}".($tenor === null ? ' — tenor tidak terbatas / belum ditentukan' : " — sisa {$tenor} bulan");
+            $lines[] = "• {$installment->name}".($tenor === null
+                ? ' — tenor tidak terbatas / belum ditentukan'
+                : " — {$this->rupiah->format($installment->nominal_default)}/bulan — sisa {$tenor} bulan");
 
-            if ($tenor !== null) {
-                $completion = $targetMonth->addMonths($tenor - 1);
-                $lines[] = "  Lunas sekitar {$this->monthLabel($completion)}";
-            } else {
+            if ($tenor === null) {
                 $nextAmount = $installment->jadwal_khusus[$targetMonth->format('Y-m')] ?? null;
                 $lines[] = '  Nominal bulan depan: '.(is_int($nextAmount) ? $this->rupiah->format($nextAmount) : 'belum diatur');
             }
 
             $months = $tenor === null ? self::PROJECTION_MONTH_LIMIT : min($tenor, self::PROJECTION_MONTH_LIMIT);
             for ($index = 0; $index < $months; $index++) {
-                $month = $targetMonth->addMonths($index);
+                $month = $targetMonth->copy()->addMonths($index);
                 $key = $month->format('Y-m');
                 $schedule = $installment->jadwal_khusus;
                 $scheduled = is_array($schedule) ? ($schedule[$key] ?? null) : null;
@@ -221,14 +220,17 @@ final class ReportingService
         $lines[] = '';
         $lines[] = '📉 Beban cicilan yang diketahui:';
         for ($index = 0; $index < self::PROJECTION_MONTH_LIMIT; $index++) {
-            $month = $targetMonth->addMonths($index);
+            $month = $targetMonth->copy()->addMonths($index);
             $key = $month->format('Y-m');
             if (! array_key_exists($key, $monthlyKnown) && ! isset($monthlyUnknown[$key])) {
                 continue;
             }
             $known = $this->rupiah->format($monthlyKnown[$key] ?? 0);
             $unknown = isset($monthlyUnknown[$key]) ? ' + tagihan belum diatur' : '';
-            $lines[] = "{$this->monthLabel($month)}: {$known}{$unknown}";
+            $cycleLabel = $index === 0
+                ? 'Potongan ke-1 (Siklus saat ini)'
+                : 'Potongan ke-'.($index + 1);
+            $lines[] = "{$cycleLabel}: {$known}{$unknown}";
         }
 
         return implode("\n", $lines);

@@ -128,7 +128,7 @@ test('projection uses fixed overrides and leaves unknown revolving amounts unkno
     Installment::query()->create([
         'user_id' => $this->user->id, 'name' => 'Motor', 'jenis' => 'tetap',
         'nominal_default' => 800_000, 'jadwal_khusus' => ['2026-09' => 700_000],
-        'sisa_tenor_bulan' => 3, 'active' => true,
+        'sisa_tenor_bulan' => 4, 'active' => true,
     ]);
     Installment::query()->create([
         'user_id' => $this->user->id, 'name' => 'Paylater', 'jenis' => 'revolving',
@@ -138,10 +138,69 @@ test('projection uses fixed overrides and leaves unknown revolving amounts unkno
 
     $projection = $this->reporting->handleProyeksi($this->user->id);
 
-    expect($projection)->toContain('Motor — sisa 3 bulan')
-        ->and($projection)->toContain('Lunas sekitar Okt 2026')
-        ->and($projection)->toContain('Agu 2026: Rp800.000 + tagihan belum diatur')
-        ->and($projection)->toContain('Sep 2026: Rp1.050.000')
+    expect($projection)->toContain('Motor — Rp800.000/bulan — sisa 4 bulan')
+        ->and($projection)->not->toContain('Lunas sekitar')
+        ->and($projection)->not->toContain('Agu 2026:')
+        ->and($projection)->not->toContain('Sep 2026:')
+        ->and($projection)->not->toContain('Okt 2026:')
+        ->and($projection)->not->toContain('Nov 2026:')
+        ->and($projection)->toContain('Potongan ke-1 (Siklus saat ini): Rp800.000 + tagihan belum diatur')
+        ->and($projection)->toContain('Potongan ke-2: Rp1.050.000')
+        ->and($projection)->toContain('Potongan ke-3: Rp800.000 + tagihan belum diatur')
+        ->and($projection)->toContain('Potongan ke-4: Rp800.000 + tagihan belum diatur')
         ->and($projection)->toContain('Paylater — tenor tidak terbatas / belum ditentukan')
         ->and($projection)->not->toContain('Paylater — tenor tidak terbatas / belum ditentukan\n  Lunas');
+});
+
+test('projection month offsets remain anchored across installments with different tenors', function (): void {
+    CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-08-24 10:00:00', 'Asia/Jakarta'));
+
+    Installment::query()->create([
+        'user_id' => $this->user->id,
+        'name' => 'Laptop',
+        'jenis' => 'tetap',
+        'nominal_default' => 100,
+        'jadwal_khusus' => [
+            '2026-08' => 101,
+            '2026-09' => 102,
+            '2026-11' => 104,
+        ],
+        'sisa_tenor_bulan' => 4,
+        'active' => true,
+    ]);
+    Installment::query()->create([
+        'user_id' => $this->user->id,
+        'name' => 'Stik',
+        'jenis' => 'tetap',
+        'nominal_default' => 1_000,
+        'jadwal_khusus' => [
+            '2026-08' => 1_001,
+            '2026-09' => 1_002,
+            '2027-06' => 1_011,
+        ],
+        'sisa_tenor_bulan' => 11,
+        'active' => true,
+    ]);
+    Installment::query()->create([
+        'user_id' => $this->user->id,
+        'name' => 'Opmaneh',
+        'jenis' => 'tetap',
+        'nominal_default' => 10_000,
+        'jadwal_khusus' => [
+            '2026-08' => 10_001,
+            '2026-09' => 10_002,
+            '2027-03' => 10_008,
+        ],
+        'sisa_tenor_bulan' => 8,
+        'active' => true,
+    ]);
+
+    $projection = $this->reporting->handleProyeksi($this->user->id);
+
+    expect($projection)->toContain('Potongan ke-1 (Siklus saat ini): Rp11.103')
+        ->and($projection)->toContain('Potongan ke-2: Rp11.106')
+        ->and($projection)->toContain('Potongan ke-4: Rp11.104')
+        ->and($projection)->toContain('Potongan ke-8: Rp11.008')
+        ->and($projection)->toContain('Potongan ke-11: Rp1.011')
+        ->and($projection)->not->toContain('Potongan ke-12:');
 });
