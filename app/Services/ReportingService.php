@@ -53,16 +53,26 @@ final class ReportingService
         $period = $this->financialEngine->recalculatePeriodState($period);
         [$remainingDays, $today] = $this->remainingDays($user, $period);
         $category = $expense->category()->value('name') ?? 'Lainnya';
+
+        $localNow = now()->setTimezone(config('app.timezone', 'Asia/Jakarta'));
+        $dayStartUtc = $localNow->copy()
+            ->startOfDay()
+            ->setTimezone('UTC');
+        $dayEndUtc = $localNow->copy()
+            ->addDay()
+            ->startOfDay()
+            ->setTimezone('UTC');
+
         $spentToday = (int) Transaction::query()
             ->where('user_id', $userId)
             ->where('budget_period_id', $period->getKey())
             ->where('type', 'expense')
             ->where('status', 'success')
-            ->where('created_at', '>=', $today->utc())
-            ->where('created_at', '<', $today->addDay()->utc())
+            ->where('created_at', '>=', $dayStartUtc)
+            ->where('created_at', '<', $dayEndUtc)
             ->sum('amount');
         $dailyBudget = $remainingDays > 0
-            ? intdiv($period->remaining_amount + $spentToday, $remainingDays)
+            ? intdiv((int) $period->remaining_amount + $spentToday, $remainingDays)
             : 0;
         $remainingToday = $dailyBudget - $spentToday;
 
