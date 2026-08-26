@@ -51,26 +51,29 @@ final class ReportingService
         }
 
         $period = $this->financialEngine->recalculatePeriodState($period);
-        [$remainingDays] = $this->remainingDays($user, $period);
+        [$remainingDays, $today] = $this->remainingDays($user, $period);
         $category = $expense->category()->value('name') ?? 'Lainnya';
+        $spentToday = (int) Transaction::query()
+            ->where('user_id', $userId)
+            ->where('budget_period_id', $period->getKey())
+            ->where('type', 'expense')
+            ->where('status', 'success')
+            ->where('created_at', '>=', $today->utc())
+            ->where('created_at', '<', $today->addDay()->utc())
+            ->sum('amount');
+        $dailyBudget = $remainingDays > 0
+            ? intdiv($period->remaining_amount + $spentToday, $remainingDays)
+            : 0;
+        $remainingToday = $dailyBudget - $spentToday;
 
-        $header = "✅ {$expense->description} tercatat\n\n".
+        return "✅ {$expense->description} tercatat\n".
             "💸 Pengeluaran: {$this->rupiah->format($expense->amount)}\n".
-            "🏷️ Kategori: {$category}\n\n";
-
-        if ($period->remaining_amount < 0) {
-            return $header.
-                "⚠️ Jatah periode sudah minus {$this->rupiah->format(abs($period->remaining_amount))}.\n\n".
-                "Uang dingin tidak dipotong otomatis.\n\n".
-                "Jika memang perlu menambah jatah:\n/ambil_dingin <nominal>";
-        }
-
-        $safeDaily = intdiv($period->remaining_amount, $remainingDays);
-
-        return $header.
+            "🏷 Kategori: {$category}\n\n".
+            "📅 Hari ini:\n".
+            "• Jatah hari ini: {$this->rupiah->format($dailyBudget)}\n".
+            "• Sisa jatah hari ini: {$this->rupiah->format($remainingToday)}\n\n".
             "💰 Sisa jatah periode: {$this->rupiah->format($period->remaining_amount)}\n".
-            "📅 Sisa waktu: {$remainingDays} hari\n".
-            "💡 Batas aman: {$this->rupiah->format($safeDaily)}/hari";
+            "⏳ Sisa waktu: {$remainingDays} hari";
     }
 
     public function handleStatus(int $userId): string
