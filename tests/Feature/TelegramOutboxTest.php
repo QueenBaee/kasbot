@@ -99,3 +99,89 @@ test('successful document delivery deletes only the private export file', functi
     expect($item->refresh()->status)->toBe('sent')
         ->and(is_file($item->document_path))->toBeFalse();
 });
+
+test('dispatch uses telegram_user_id instead of database user_id for messages', function (): void {
+    Http::fake(['api.telegram.org/*' => Http::response(['ok' => true])]);
+
+    $this->outbox->enqueueMessage($this->user->id, 'chat-id-msg-check', 'Hello Telegram');
+    $this->artisan('telegram:dispatch-outbox')->assertSuccessful();
+
+    Http::assertSent(function ($request) {
+        return str_contains($request->url(), 'sendMessage')
+            && $request['chat_id'] === 9001
+            && $request['chat_id'] !== $this->user->id;
+    });
+});
+
+test('dispatch uses telegram_user_id instead of database user_id for documents', function (): void {
+    Storage::fake('local');
+    Storage::disk('local')->put('exports/data.csv', 'test-data');
+    Http::fake(['api.telegram.org/*' => Http::response(['ok' => true])]);
+
+    $this->outbox->enqueueDocument(
+        $this->user->id,
+        'chat-id-doc-check',
+        Storage::disk('local')->path('exports/data.csv'),
+        'data.csv',
+        'text/csv',
+        'My Document',
+    );
+
+    $this->artisan('telegram:dispatch-outbox')->assertSuccessful();
+
+    Http::assertSent(function ($request) {
+        if (! str_contains($request->url(), 'sendDocument')) {
+            return false;
+        }
+
+        $chatIdPart = collect($request->data())->firstWhere('name', 'chat_id');
+
+        return (int) ($chatIdPart['contents'] ?? null) === 9001;
+    });
+});
+
+test('missing user does not trigger telegram request and records last_error as terminal failure', function (): void {
+    Http::fake();
+
+    DB::rollBack();
+    DB::statement('PRAGMA foreign_keys = OFF;');
+    $tempUser = User::query()->create([
+        'telegram_user_id' => 99999,
+        'name' => 'Temp User',
+        'timezone' => 'Asia/Jakarta',
+    ]);
+    $item = $this->outbox->enqueueMessage($tempUser->id, 'missing-user-check', 'Hello missing user');
+    DB::table('users')->where('id', $tempUser->id)->delete();
+    DB::statement('PRAGMA foreign_keys = ON;');
+    DB::beginTransaction();
+
+    $this->artisan('telegram:dispatch-outbox')->assertSuccessful();
+
+    Http::assertNothingSent();
+
+    $item->refresh();
+    expect($item->status)->toBe('failed')
+        ->and($item->attempts)->toBe(1)
+        ->and($item->last_error)->toContain("User not found for user_id: {$tempUser->id}");
+});
+
+test('user without telegram_user_id does not trigger telegram request and records last_error as terminal failure', function (): void {
+    Http::fake();
+
+    $noTgUser = User::query()->create([
+        'telegram_user_id' => 0,
+        'name' => 'No TG ID User',
+        'timezone' => 'Asia/Jakarta',
+    ]);
+
+    $item = $this->outbox->enqueueMessage($noTgUser->id, 'no-tg-id-check', 'Hello no TG ID');
+
+    $this->artisan('telegram:dispatch-outbox')->assertSuccessful();
+
+    Http::assertNothingSent();
+
+    $item->refresh();
+    expect($item->status)->toBe('failed')
+        ->and($item->attempts)->toBe(1)
+        ->and($item->last_error)->toContain("Telegram user ID is not configured for user_id: {$noTgUser->id}");
+});
