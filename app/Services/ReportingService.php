@@ -54,23 +54,14 @@ final class ReportingService
         [$remainingDays, $today] = $this->remainingDays($user, $period);
         $category = $expense->category()->value('name') ?? 'Lainnya';
 
-        $localNow = now()->setTimezone(config('app.timezone', 'Asia/Jakarta'));
-        $dayStartUtc = $localNow->copy()
-            ->startOfDay()
-            ->setTimezone('UTC');
-        $dayEndUtc = $localNow->copy()
-            ->addDay()
-            ->startOfDay()
-            ->setTimezone('UTC');
+        $todayDate = now()
+            ->setTimezone(config('app.timezone', 'Asia/Jakarta'))
+            ->toDateString();
 
         $spentToday = (int) Transaction::query()
             ->where('user_id', $userId)
             ->where('budget_period_id', $period->getKey())
             ->where('type', 'expense')
-            ->where('status', 'success')
-            ->where('created_at', '>=', $dayStartUtc)
-            ->where('created_at', '<', $dayEndUtc)
-            ->sum('amount');
         $dailyBudget = $remainingDays > 0
             ? intdiv((int) $period->remaining_amount + $spentToday, $remainingDays)
             : 0;
@@ -79,7 +70,6 @@ final class ReportingService
         return "✅ {$expense->description} tercatat\n".
             "💸 Pengeluaran: {$this->rupiah->format($expense->amount)}\n".
             "🏷 Kategori: {$category}\n\n".
-            "📅 Hari ini:\n".
             "• Jatah hari ini: {$this->rupiah->format($dailyBudget)}\n".
             "• Sisa jatah hari ini: {$this->rupiah->format($remainingToday)}\n\n".
             "💰 Sisa jatah periode: {$this->rupiah->format($period->remaining_amount)}\n".
